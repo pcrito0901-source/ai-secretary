@@ -277,6 +277,8 @@ function render() {
   renderMemos();
   renderDecisions();
   renderDepartments();
+  $("analytics-card").hidden = !state.features?.analytics;
+  $("ideas-card").hidden = !state.features?.ideas;
   renderAnalytics();
   renderIdeas();
   renderRecent();

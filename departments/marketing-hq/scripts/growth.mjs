@@ -5,9 +5,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
-import * as lib from "../../../secretary/scripts/lib.mjs";
-import { parseArgs } from "../../../secretary/scripts/secretary.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// The secretary skill's scripts are found next to this skill in both layouts: a clone of the
+// repository (departments/<skill>/scripts → ../../../secretary) and an installed skills folder
+// where each skill is a sibling (~/.claude/skills/<skill>/scripts → ../../secretary).
+const secretaryScripts = (() => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    process.env.AI_SECRETARY_SCRIPTS,
+    path.join(here, "..", "..", "..", "secretary", "scripts"),
+    path.join(here, "..", "..", "secretary", "scripts"),
+  ].filter(Boolean);
+  const found = candidates.find((dir) => fs.existsSync(path.join(dir, "lib.mjs")));
+  if (!found) throw new Error("AI秘書の本体（secretary スキル）が見つかりません。secretary を同じ skills フォルダに入れてください。");
+  return found;
+})();
+const lib = await import(pathToFileURL(path.join(secretaryScripts, "lib.mjs")).href);
+const { parseArgs } = await import(pathToFileURL(path.join(secretaryScripts, "secretary.mjs")).href);
 
 const marketingDir = (home) => path.join(home, "departments", "marketing");
 const appsDir = (home) => path.join(marketingDir(home), "apps");

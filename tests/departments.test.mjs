@@ -274,3 +274,33 @@ describe("department skills: SKILL.md", () => {
     }
   });
 });
+
+describe("installed as separate skill folders", () => {
+  test("department scripts find the secretary scripts when skills sit side by side", () => {
+    const repo = fileURLToPath(new URL("../", import.meta.url));
+    const skills = fs.mkdtempSync(path.join(os.tmpdir(), "ai-secretary-skills-"));
+    temps.push(skills);
+    fs.cpSync(path.join(repo, "secretary"), path.join(skills, "secretary"), { recursive: true });
+    for (const name of ["marketing-hq", "bucket-check", "review-insights"]) {
+      fs.cpSync(path.join(repo, "departments", name), path.join(skills, name), { recursive: true });
+    }
+    const runs = [
+      ["marketing-hq/scripts/growth.mjs", /マーケティング部 CLI/],
+      ["bucket-check/scripts/metrics.mjs", /./],
+      ["review-insights/scripts/reviews.mjs", /レビュー調査 CLI/],
+    ];
+    for (const [script, expected] of runs) {
+      const result = spawnSync(process.execPath, [path.join(skills, script), "--help"], { encoding: "utf8", env: { ...process.env, AI_SECRETARY_SCRIPTS: "" } });
+      assert.equal(result.status, 0, `${script}: ${result.stderr}`);
+      assert.match(result.stdout, expected, script);
+    }
+  });
+
+  test("optional dashboard cards follow the departments", () => {
+    const dir = home({ marketing: false });
+    assert.deepEqual(lib.dashboardState(dir).features, { analytics: false, ideas: false });
+    lib.addDepartment(dir, { id: "analytics" });
+    lib.addDepartment(dir, { id: "research" });
+    assert.deepEqual(lib.dashboardState(dir).features, { analytics: true, ideas: true });
+  });
+});

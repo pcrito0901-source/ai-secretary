@@ -114,9 +114,9 @@ updated: "YYYY-MM-DD"
 
 状態や段階を変えたら、frontmatter の `status`・`stage`・`updated` も直す。
 
-## AI の議論で考えるハーネスとの使い分け
+## AI の議論で考える道具と組み合わせる（任意）
 
-[app-idea-feedback-harness](https://github.com/pcrito0901-source/app-idea-feedback-harness) は、複数の AI エージェントがアイデアを分析・反証し、BUILD / ITERATE / VALIDATE / PIVOT / KILL を判定して、外の世界で行う検証実験を設計する。役割は次のように分ける。
+複数の AI エージェントがアイデアを分析・反証して判定する道具（ハーネス）を使っている場合は、役割を次のように分ける。例えば [app-idea-feedback-harness](https://github.com/pcrito0901-source/app-idea-feedback-harness) は、BUILD / ITERATE / VALIDATE / PIVOT / KILL を判定し、外の世界で行う検証実験を設計する。使っていなければ、この節は読み飛ばしてよい。
 
 | | ハーネス | idea-check |
 |---|---|---|

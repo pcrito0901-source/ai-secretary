@@ -283,3 +283,5 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
   font-size: 14px;
   max-width: calc(100vw - 32px);
 }
+
+[hidden] { display: none !important; }

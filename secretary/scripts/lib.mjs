@@ -51,9 +51,9 @@ export const DEPARTMENTS = {
     ],
   },
   marketing: {
-    name: "マーケティング", role: "アプリの集客・SNS・キャンペーン・数字の振り返り", folders: ["apps", "content", "campaigns", "reports"],
+    name: "マーケティング", role: "集客・SNS・キャンペーン・数字の振り返り", folders: ["apps", "content", "campaigns", "reports"],
     rules: [
-      "アプリごとの前提情報は `apps/<アプリID>.md`、SNS投稿案は `content/`、キャンペーンは `campaigns/`、週次レポートは `reports/` に保存する",
+      "宣伝するアプリ・商品・サービスごとの前提情報は `apps/<ID>.md`、SNS投稿案は `content/`、キャンペーンは `campaigns/`、週次レポートは `reports/` に保存する",
       "投稿の実績は `post-log.md` に記録する（marketing-hq スキルの growth.mjs を使う）",
       "KPIは数値で記録する。企業案件やクリエイターへの依頼投稿には必ずPR表記を入れる（ステマ規制）",
       "公開する文（SNS・ストア・広告・LP）に、他社のアプリ名・サービス名を使わない。「〇〇版」「〇〇風」のたとえやハッシュタグも使わない。例外は、連携先を事実として中立に書く場合だけ",
@@ -82,7 +82,7 @@ export const DEPARTMENTS = {
     rules: ["デザイン依頼は `briefs/` に目的・対象・トーン・要件を書いて保存する"],
   },
   analytics: {
-    name: "分析", role: "アプリの数字（集客〜収益）の記録・穴の診断・改善の管理", folders: ["apps", "reports"],
+    name: "分析", role: "アプリやサービスの数字（集客〜収益）の記録・穴の診断・改善の管理", folders: ["apps", "reports"],
     rules: [
       "アプリごとに `apps/<アプリID>/` を作り、`bucket.md`（バケツの設計図）・`metrics.json`（指標の定義と週ごとの数字）・`experiments.md`（改善ボード）を置く",
       "数字の記録は bucket-check スキルの metrics.mjs で行い、metrics.json を手で書き換えない",
@@ -1407,6 +1407,11 @@ export function dashboardState(home) {
     milestones: upcomingMilestones(home, { date, days: 14 }),
     analytics: analyticsState(home),
     ideas: listIdeas(home),
+    // Cards for optional departments appear only for people who use them.
+    features: {
+      analytics: config.departments.some((department) => department.id === "analytics") || listMetricApps(home).length > 0,
+      ideas: config.departments.some((department) => department.id === "research") || listIdeas(home).length > 0,
+    },
     week,
     memos,
     decisions,
