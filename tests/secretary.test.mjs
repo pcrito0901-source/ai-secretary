@@ -327,3 +327,155 @@ describe("dashboard", () => {
     }
   });
 });
+
+describe("todo drop and replace", () => {
+  test("drop removes an open item and notes it in the memo section", () => {
+    const home = initialized();
+    lib.addTodo(home, { text: "古いSNS投稿" });
+    lib.addTodo(home, { text: "請求書を送る" });
+    const result = lib.dropTodo(home, { target: "SNS", reason: "新しい案に切り替え" });
+    assert.equal(result.dropped.text, "古いSNS投稿");
+    const content = fs.readFileSync(result.file, "utf8");
+    assert.ok(!content.includes("- [ ] 古いSNS投稿"));
+    assert.match(content, /見送り: 古いSNS投稿（新しい案に切り替え）/);
+    assert.deepEqual(lib.listTodos(home).items.map((item) => item.text), ["請求書を送る"]);
+    assert.throws(() => lib.dropTodo(home, { target: "存在しない" }), /ありません/);
+  });
+
+  test("replace keeps only the newest daily item with the same prefix", () => {
+    const home = initialized();
+    lib.addTodo(home, { text: "SNS投稿: アプリ（案: content/a.md）" });
+    lib.addTodo(home, { text: "SNS投稿: アプリ（案: content/b.md）" });
+    lib.addTodo(home, { text: "ほかのTODO" });
+    const result = lib.addTodo(home, { text: "SNS投稿: アプリ（案: content/c.md）", replace: "SNS投稿: アプリ" });
+    assert.equal(result.added, true);
+    assert.equal(result.replaced.length, 2);
+    assert.deepEqual(lib.listTodos(home).items.map((item) => item.text), ["ほかのTODO", "SNS投稿: アプリ（案: content/c.md）"]);
+    assert.match(fs.readFileSync(result.file, "utf8"), /置き換え: SNS投稿: アプリ（案: content\/a\.md）/);
+  });
+
+  test("CLI todo drop", () => {
+    const home = initialized();
+    cli(home, "todo", "add", "見送るもの");
+    const result = cli(home, "todo", "drop", "1", "--reason", "不要になった");
+    assert.equal(result.code, 0, result.err);
+    assert.equal(result.json.dropped.text, "見送るもの");
+  });
+});
+
+describe("pm: milestones, progress log, repos", () => {
+  function withProject() {
+    const home = initialized();
+    lib.addDepartment(home, { id: "pm" });
+    const file = path.join(home, "departments", "pm", "projects", "app.md");
+    fs.writeFileSync(file, [
+      "# アプリ",
+      "",
+      "## マイルストーン",
+      "",
+      "### 公開まで",
+      `- [ ] 審査に出す（期限: ${today}）`,
+      `- [x] 計測を入れる（期限: ${yesterday}）（済み）`,
+      `- [ ] 課題を直す（期限: ${yesterday}）（メモつき）`,
+      "",
+      "## 進捗ログ",
+      "",
+      "- 2026-09-01: 開始",
+      "",
+    ].join("\n"));
+    return { home, file };
+  }
+
+  test("parse milestones, including notes after the due date", () => {
+    const { home } = withProject();
+    const { milestones } = lib.listProjects(home, { project: "app" });
+    assert.deepEqual(milestones.map((m) => [m.n, m.status, m.text, m.due, m.section]), [
+      [1, "open", "審査に出す", today, "公開まで"],
+      [2, "done", "計測を入れる （済み）", yesterday, "公開まで"],
+      [3, "open", "課題を直す （メモつき）", yesterday, "公開まで"],
+    ]);
+    const upcoming = lib.upcomingMilestones(home);
+    assert.deepEqual(upcoming.map((m) => [m.text, m.overdue]), [["課題を直す （メモつき）", true], ["審査に出す", false]]);
+    assert.equal(lib.listProjects(home).projects[0].next.text, "課題を直す （メモつき）");
+  });
+
+  test("add, done, due, log", () => {
+    const { home, file } = withProject();
+    const added = lib.addMilestone(home, { project: "app", text: "スクショを作る", due: "+2", section: "公開まで" });
+    assert.equal(added.added, true);
+    assert.equal(lib.addMilestone(home, { project: "app", text: "スクショを作る", due: "+2" }).added, false);
+    lib.addMilestone(home, { project: "app", text: "週次の数字を見る", due: "+10", section: "公開後" });
+    let content = fs.readFileSync(file, "utf8");
+    assert.ok(content.indexOf("スクショを作る") < content.indexOf("### 公開後"), "added under 公開まで");
+    assert.ok(content.indexOf("### 公開後") < content.indexOf("## 進捗ログ"), "new subsection stays inside milestones");
+
+    lib.setMilestoneDone(home, { project: "app", target: "審査" });
+    const due = lib.setMilestoneDue(home, { project: "app", target: "課題", due: "+5" });
+    assert.equal(due.to, lib.addDays(today, 5));
+    lib.addProgressLog(home, { project: "app", text: "審査に出した" });
+    content = fs.readFileSync(file, "utf8");
+    assert.match(content, /- \[x\] 審査に出す/);
+    assert.match(content, new RegExp(`課題を直す（期限: ${lib.addDays(today, 5)}）（メモつき）`));
+    assert.ok(content.trimEnd().endsWith(`- ${today}: 審査に出した`));
+    assert.throws(() => lib.setMilestoneDone(home, { project: "app", target: "審査" }), /ありません/);
+    assert.throws(() => lib.addMilestone(home, { project: "app", text: "期限なし" }), /期限が必要/);
+    assert.throws(() => lib.listProjects(home, { project: "nothing" }), /ありません/);
+  });
+
+  test("CLI pm commands", () => {
+    const { home } = withProject();
+    assert.equal(cli(home, "pm", "add", "app", "LPを作る", "--due", "+3").json.added, true);
+    assert.equal(cli(home, "pm", "done", "app", "LP").code, 0);
+    assert.equal(cli(home, "pm", "log", "app", "LPを公開").code, 0);
+    const list = cli(home, "pm", "list", "app");
+    assert.ok(list.json.milestones.some((m) => m.text === "LPを作る" && m.status === "done"));
+  });
+
+  test("link a git repository and read recent activity", { skip: spawnSync("git", ["--version"]).status !== 0 }, () => {
+    const { home } = withProject();
+    const repo = path.join(path.dirname(home), "repo");
+    fs.mkdirSync(repo);
+    const git = (...args) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { encoding: "utf8" });
+    git("init", "-q");
+    git("commit", "-q", "--allow-empty", "-m", "status: 計画をユーザーへ");
+    git("commit", "-q", "--allow-empty", "-m", "status: ユーザーの答えを反映");
+    assert.throws(() => lib.linkRepo(home, { project: "app", repo: path.dirname(home) }), /git のリポジトリではありません/);
+    lib.linkRepo(home, { project: "app", repo });
+    assert.equal(lib.readConfig(home).repos.app, path.resolve(repo));
+    const [activity] = lib.devActivity(home, { hours: 1 });
+    assert.equal(activity.commits.length, 2);
+    assert.deepEqual(activity.waiting.map((commit) => commit.subject), ["status: 計画をユーザーへ"]);
+    const brief = lib.buildBrief(home, {});
+    assert.match(brief.markdown, /## 開発の動き/);
+    assert.match(brief.markdown, /確認待ちかもしれません/);
+  });
+
+  test("config rejects malformed repos", () => {
+    const home = initialized();
+    const file = path.join(home, "config.json");
+    const config = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(file, JSON.stringify({ ...config, repos: { "Bad Id": "x" } }));
+    assert.throws(() => lib.readConfig(home), /repos が不正/);
+  });
+});
+
+describe("ideas", () => {
+  test("idea records appear on the dashboard state", () => {
+    const home = initialized();
+    lib.addDepartment(home, { id: "research" });
+    const dir = path.join(home, "departments", "research", "ideas");
+    assert.ok(fs.existsSync(dir), "research preset creates ideas/");
+    fs.writeFileSync(path.join(dir, "a.md"), `---\nname: "案A"\nstatus: "検証中"   # 状態\nstage: 1\nupdated: "2026-10-01"\n---\n\n# 案A\n`);
+    fs.writeFileSync(path.join(dir, "b.md"), "# 案B（frontmatter なし）\n");
+    const ideas = lib.dashboardState(home).ideas;
+    assert.deepEqual(ideas.map((idea) => [idea.id, idea.name, idea.status, idea.stage]), [["a", "案A", "検証中", 1], ["b", "案B（frontmatter なし）", null, null]]);
+  });
+
+  test("marketing preset carries the copy rules", () => {
+    const home = initialized();
+    lib.addDepartment(home, { id: "marketing" });
+    const rules = fs.readFileSync(path.join(home, "departments", "marketing", "RULES.md"), "utf8");
+    assert.match(rules, /他社のアプリ名・サービス名を使わない/);
+    assert.match(rules, /商用利用できるもの/);
+  });
+});

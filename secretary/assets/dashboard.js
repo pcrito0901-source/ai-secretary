@@ -242,6 +242,23 @@ function renderAnalytics() {
   }
 }
 
+const STAGES = ["机の上", "話を聞く", "申込", "手作業", "試作品", "公開"];
+
+function renderIdeas() {
+  const list = $("ideas");
+  list.replaceChildren();
+  const ideas = state.ideas ?? [];
+  if (!ideas.length) {
+    list.append(el("li", { class: "empty" }, "記録されたアイデアはまだありません。Claude Code で「アプリのアイデアを思いついた」と話しかけてください。"));
+    return;
+  }
+  for (const idea of ideas) {
+    const stage = idea.stage === null ? null : el("span", { class: "meta" }, `段階${idea.stage}${STAGES[idea.stage] ? `（${STAGES[idea.stage]}）` : ""}`);
+    const status = idea.status ? el("span", { class: `badge ${idea.status === "不採用" ? "over" : idea.status === "検証中" ? "soon" : ""}` }, idea.status) : null;
+    list.append(el("li", {}, el("button", { type: "button", class: "link", onclick: () => openFile(idea.path) }, idea.name), status, el("div", {}, stage, idea.updated ? el("span", { class: "meta" }, `更新 ${idea.updated}`) : null)));
+  }
+}
+
 function renderRecent() {
   const list = $("recent");
   list.replaceChildren();
@@ -261,6 +278,7 @@ function render() {
   renderDecisions();
   renderDepartments();
   renderAnalytics();
+  renderIdeas();
   renderRecent();
 }
 

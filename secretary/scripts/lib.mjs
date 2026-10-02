@@ -1,5 +1,6 @@
 // Core data operations for the AI secretary. No third-party dependencies.
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -33,18 +34,20 @@ const COMMON_RULES = [
 
 export const DEPARTMENTS = {
   research: {
-    name: "リサーチ", role: "市場調査・競合分析・技術調査", folders: ["topics"],
+    name: "リサーチ", role: "市場調査・競合分析・技術調査・アイデアの需要検証", folders: ["topics", "ideas"],
     rules: [
       "調査は `topics/` に保存し、情報源（URLや出典）・結論・次のアクションを必ず書く",
       "App Store レビューの分析は `topics/reviews/` に保存する（review-insights スキル）",
+      "アイデアの需要検証は `ideas/<アイデアID>.md` に1ファイルで記録する（idea-check スキル）。段階ごとの合格ラインは、始める前に書く",
     ],
   },
   pm: {
     name: "PM", role: "プロジェクトの進捗・マイルストーン管理", folders: ["projects"],
     rules: [
       "プロジェクトは `projects/プロジェクト名.md` に1ファイルで管理し、ゴールとマイルストーンを書く",
-      "マイルストーンは `## マイルストーン` の下に `- [ ] 内容（期限: YYYY-MM-DD）` の形で書く（朝のまとめに7日以内のものが載る）。終わったら `[x]` にする",
-      "進捗は `## 進捗ログ` に日付付きで追記する",
+      "マイルストーンは `## マイルストーン` の下に `- [ ] 内容（期限: YYYY-MM-DD）` の形で書く（朝のまとめに7日以内のものが載る）。追加・完了・期限の変更は `secretary.mjs pm` コマンドで行う",
+      "進捗は `## 進捗ログ` に日付付きで追記する（`secretary.mjs pm log`）",
+      "開発のリポジトリがあれば `secretary.mjs pm link <プロジェクトID> --repo <フォルダ>` でつなぐ（朝のまとめに開発の動きが載る）",
     ],
   },
   marketing: {
@@ -53,6 +56,9 @@ export const DEPARTMENTS = {
       "アプリごとの前提情報は `apps/<アプリID>.md`、SNS投稿案は `content/`、キャンペーンは `campaigns/`、週次レポートは `reports/` に保存する",
       "投稿の実績は `post-log.md` に記録する（marketing-hq スキルの growth.mjs を使う）",
       "KPIは数値で記録する。企業案件やクリエイターへの依頼投稿には必ずPR表記を入れる（ステマ規制）",
+      "公開する文（SNS・ストア・広告・LP）に、他社のアプリ名・サービス名を使わない。「〇〇版」「〇〇風」のたとえやハッシュタグも使わない。例外は、連携先を事実として中立に書く場合だけ",
+      "宣伝の投稿に使う音楽は、商用利用できるものだけにする（個人向けのトレンドの曲は使わない）",
+      "「公開した」「直した」「審査に出した」などの事実は、PM のマイルストーンやアプリの状態で確かめてから書く",
     ],
   },
   engineering: {
@@ -240,6 +246,11 @@ function validateConfig(config) {
     }
     seen.add(department.id);
   }
+  if (config.repos !== undefined) {
+    const valid = config.repos && typeof config.repos === "object" && !Array.isArray(config.repos)
+      && Object.entries(config.repos).every(([id, repo]) => validDepartmentId(id) && typeof repo === "string" && repo.length > 0);
+    if (!valid) throw new UserError("config.json の repos が不正です（{ \"プロジェクトID\": \"フォルダのパス\" } の形にしてください）。");
+  }
   return config;
 }
 
@@ -401,20 +412,39 @@ function normalizePriority(value) {
 
 const publicItem = ({ n, line, priority, status, text, due }) => ({ n, line, priority, status, text, due });
 
-export function addTodo(home, { text, priority, due, date } = {}) {
+// `replace`: open items starting with this prefix are removed first, so a routine that adds
+// "SNS投稿: …" every morning keeps only the newest one. Removed items are noted in the memo section.
+export function addTodo(home, { text, priority, due, date, replace } = {}) {
   readConfig(home);
   const task = oneLine(text, "TODOの内容", 300).replace(DUE_RE, "");
   const key = normalizePriority(priority);
   const dueDate = due ? resolveDateInput(due, "期限") : null;
   const target = date ? resolveDateInput(date) : formatDate();
+  const prefix = replace === undefined ? null : oneLine(replace, "置き換える TODO の先頭（--replace）", 300);
   return withLock(home, () => {
     const { file } = ensureTodo(home, target);
-    const content = fs.readFileSync(file, "utf8");
+    let content = fs.readFileSync(file, "utf8");
+    const replaced = [];
+    if (prefix) {
+      const parsed = parseTodo(content);
+      const stale = parsed.items.filter((item) => item.status === "open" && item.text !== task && item.text.startsWith(prefix));
+      if (stale.length) {
+        const drop = new Set(stale.map((item) => item.line));
+        content = parsed.lines.filter((_, index) => !drop.has(index)).join("\n");
+        for (const item of stale) {
+          content = insertIntoSection(content, NOTES_HEADING, `- ${formatTime()} 置き換え: ${item.text}`);
+          replaced.push(item.text);
+        }
+      }
+    }
     const duplicate = parseTodo(content).items.find((item) => item.status === "open" && item.text === task);
-    if (duplicate) return { file, date: target, added: false, reason: "同じTODOがすでにあります", item: publicItem(duplicate) };
+    if (duplicate) {
+      if (replaced.length) writeFileAtomic(file, content);
+      return { file, date: target, added: false, reason: "同じTODOがすでにあります", item: publicItem(duplicate), replaced };
+    }
     const line = `- [ ] ${task}${dueDate ? `（期限: ${dueDate}）` : ""}`;
     writeFileAtomic(file, insertIntoSection(content, headingOf(key), line));
-    return { file, date: target, added: true, text: task, priority: key, due: dueDate };
+    return { file, date: target, added: true, text: task, priority: key, due: dueDate, replaced };
   });
 }
 
@@ -471,6 +501,43 @@ export function setTodoDone(home, { target, line, text, date, done = true } = {}
       writeFileAtomic(file, parsed.lines.join("\n"));
     }
     return { file, date: day, changed, item: publicItem({ ...item, status: done ? "done" : "open" }) };
+  });
+}
+
+// Lookup by number or by a unique text fragment (used by todo drop and the pm commands).
+function findItem(candidates, { target, wanted, label, hint }) {
+  if (/^\d+$/.test(String(target ?? "").trim())) {
+    const item = candidates.find((entry) => entry.n === Number(target));
+    if (!item) throw new UserError(`${target} 番の${label}はありません。${hint} で番号を確認してください。`);
+    if (wanted && item.status !== wanted) throw new UserError(`${target} 番の${label}は${item.status === "done" ? "完了済み" : "未完了"}です。`);
+    return item;
+  }
+  const query = oneLine(target, `対象の${label}（番号か文字）`, 300);
+  const matches = candidates.filter((entry) => (!wanted || entry.status === wanted) && entry.text.includes(query));
+  const state = wanted === "open" ? "未完了の" : wanted === "done" ? "完了済みの" : "";
+  if (matches.length === 0) throw new UserError(`「${query}」を含む${state}${label}はありません。`);
+  if (matches.length > 1) {
+    throw new UserError(`「${query}」に当てはまる${label}が複数あります。番号で指定してください: ${matches.map((entry) => `${entry.n}. ${entry.text}`).join(" / ")}`);
+  }
+  return matches[0];
+}
+
+// Removes an unfinished TODO without marking it done, and notes what was dropped (and why)
+// in the memo section so the history stays readable.
+export function dropTodo(home, { target, date, reason } = {}) {
+  readConfig(home);
+  const day = date ? resolveDateInput(date) : formatDate();
+  const why = reason === undefined ? null : oneLine(reason, "理由（--reason）", 300);
+  return withLock(home, () => {
+    if (day === formatDate()) ensureTodo(home, day);
+    const file = todoFile(home, day);
+    const content = readText(file);
+    if (content === null) throw new UserError(`${day} のTODOはありません。`);
+    const parsed = parseTodo(content);
+    const item = findItem(parsed.items.filter((entry) => entry.status !== "carried"), { target, wanted: "open", label: "TODO", hint: "todo list" });
+    const rest = parsed.lines.filter((_, index) => index !== item.line).join("\n");
+    writeFileAtomic(file, insertIntoSection(rest, NOTES_HEADING, `- ${formatTime()} 見送り: ${item.text}${why ? `（${why}）` : ""}`));
+    return { file, date: day, dropped: publicItem(item), reason: why };
   });
 }
 
@@ -686,27 +753,269 @@ function readDecisions(home, month) {
   return decisions;
 }
 
+// ---------- PM: projects, milestones, progress log, linked repositories ----------
+
+const DUE_ANY = /（期限:\s*(\d{4}-\d{2}-\d{2})）/;
+const MILESTONES_HEADING = "マイルストーン";
+const PROGRESS_HEADING = "進捗ログ";
+const projectsDir = (home) => path.join(home, "departments", "pm", "projects");
+
+function projectIds(home) {
+  try {
+    return fs.readdirSync(projectsDir(home)).filter((name) => name.endsWith(".md")).map((name) => path.basename(name, ".md")).sort();
+  } catch {
+    return [];
+  }
+}
+
+function projectFile(home, project) {
+  if (!validDepartmentId(project)) throw new UserError("プロジェクトIDは英小文字・数字・ハイフンで指定してください（pm list で確認できます）。");
+  const file = path.join(projectsDir(home), `${project}.md`);
+  if (!fs.existsSync(file)) throw new UserError(`プロジェクト「${project}」はありません（departments/pm/projects/${project}.md）。pm list で確認してください。`);
+  return file;
+}
+
+// Milestones are checklist lines anywhere in a project file. The due date may be followed by notes.
+export function parseMilestones(content) {
+  const lines = content.split(/\r?\n/);
+  const items = [];
+  let section = null;
+  let number = 0;
+  lines.forEach((line, index) => {
+    const heading = line.match(/^#{2,3}\s+(.+?)\s*$/);
+    if (heading) {
+      section = heading[1];
+      return;
+    }
+    const match = line.match(ITEM_RE);
+    if (!match || match[2] === ">") return;
+    items.push({
+      n: ++number,
+      line: index,
+      section,
+      status: match[2] === " " ? "open" : "done",
+      text: match[4].replace(DUE_ANY, " ").replace(/\s+/g, " ").trim(),
+      due: match[4].match(DUE_ANY)?.[1] ?? null,
+    });
+  });
+  return { lines, items };
+}
+
+const publicMilestone = ({ n, section, status, text, due }) => ({ n, section, status, text, due });
+
 // Open milestones from pm/projects/*.md, written as `- [ ] text（期限: YYYY-MM-DD）`.
 export function upcomingMilestones(home, { date = formatDate(), days = 7 } = {}) {
-  const dir = path.join(home, "departments", "pm", "projects");
+  const until = addDays(date, days);
+  const milestones = [];
+  for (const id of projectIds(home)) {
+    const content = readText(path.join(projectsDir(home), `${id}.md`)) ?? "";
+    const project = titleOf(content, id);
+    for (const item of parseMilestones(content).items) {
+      if (item.status === "open" && item.due && item.due <= until) {
+        milestones.push({ project, file: `departments/pm/projects/${id}.md`, text: item.text, due: item.due, overdue: item.due < date });
+      }
+    }
+  }
+  return milestones.sort((a, b) => a.due.localeCompare(b.due));
+}
+
+export function listProjects(home, { project } = {}) {
+  const config = readConfig(home);
+  if (project) {
+    const file = projectFile(home, project);
+    const content = fs.readFileSync(file, "utf8");
+    return {
+      project,
+      title: titleOf(content, project),
+      file,
+      repo: config.repos?.[project] ?? null,
+      milestones: parseMilestones(content).items.map(publicMilestone),
+    };
+  }
+  const projects = projectIds(home).map((id) => {
+    const content = readText(path.join(projectsDir(home), `${id}.md`)) ?? "";
+    const items = parseMilestones(content).items;
+    const next = items.filter((item) => item.status === "open" && item.due).sort((a, b) => a.due.localeCompare(b.due))[0];
+    return {
+      project: id,
+      title: titleOf(content, id),
+      open: items.filter((item) => item.status === "open").length,
+      done: items.filter((item) => item.status === "done").length,
+      next: next ? publicMilestone(next) : null,
+      repo: config.repos?.[id] ?? null,
+    };
+  });
+  return { projects };
+}
+
+// Range [start, end) of the lines under a `##`/`###` heading, ending at the next heading of the
+// same or a higher level.
+function sectionRange(lines, title, level, from = 0, to = lines.length) {
+  const marker = `${"#".repeat(level)} ${title}`;
+  const start = lines.findIndex((line, index) => index >= from && index < to && line.trim() === marker);
+  if (start < 0) return null;
+  let end = lines.findIndex((line, index) => index > start && index < to && new RegExp(`^#{1,${level}}\\s`).test(line));
+  if (end < 0) end = to;
+  return { start, end };
+}
+
+function appendInRange(lines, { start, end }, newLine) {
+  let at = end;
+  while (at > start + 1 && !lines[at - 1].trim()) at -= 1;
+  lines.splice(at, 0, newLine);
+  if (lines[at + 1] !== undefined && /^#{1,6}\s/.test(lines[at + 1])) lines.splice(at + 1, 0, "");
+}
+
+function ensureSection(lines, title, level, { before, from = 0, to = lines.length } = {}) {
+  const found = sectionRange(lines, title, level, from, to);
+  if (found) return found;
+  let at = to;
+  if (before) {
+    const next = lines.findIndex((line, index) => index >= from && index < to && line.trim() === before);
+    if (next >= 0) at = next;
+  }
+  while (at > from && !lines[at - 1].trim()) at -= 1;
+  lines.splice(at, 0, "", `${"#".repeat(level)} ${title}`, "");
+  return sectionRange(lines, title, level, from, to + 3);
+}
+
+export function addMilestone(home, { project, text, due, section } = {}) {
+  readConfig(home);
+  const task = oneLine(text, "マイルストーンの内容", 300).replace(DUE_ANY, "").trim();
+  if (!due) throw new UserError("マイルストーンには期限が必要です（--due YYYY-MM-DD）。");
+  const dueDate = resolveDateInput(due, "期限");
+  const sub = section === undefined ? null : oneLine(section, "小見出し（--section）", 100);
+  return withLock(home, () => {
+    const file = projectFile(home, project);
+    const content = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n").replace(/\n+$/, "");
+    const existing = parseMilestones(content).items.find((item) => item.status === "open" && item.text === task);
+    if (existing) return { file, added: false, reason: "同じマイルストーンがすでにあります", milestone: publicMilestone(existing) };
+    const lines = content.split("\n");
+    let range = ensureSection(lines, MILESTONES_HEADING, 2, { before: `## ${PROGRESS_HEADING}` });
+    if (sub) range = ensureSection(lines, sub, 3, { from: range.start + 1, to: range.end });
+    appendInRange(lines, range, `- [ ] ${task}（期限: ${dueDate}）`);
+    writeFileAtomic(file, `${lines.join("\n")}\n`);
+    return { file, added: true, text: task, due: dueDate, section: sub ?? MILESTONES_HEADING };
+  });
+}
+
+export function setMilestoneDone(home, { project, target, done = true } = {}) {
+  readConfig(home);
+  return withLock(home, () => {
+    const file = projectFile(home, project);
+    const parsed = parseMilestones(fs.readFileSync(file, "utf8"));
+    const item = findItem(parsed.items, { target, wanted: done ? "open" : "done", label: "マイルストーン", hint: "pm list <プロジェクトID>" });
+    parsed.lines[item.line] = parsed.lines[item.line].replace(ITEM_RE, `$1${done ? "x" : " "}$3$4`);
+    writeFileAtomic(file, parsed.lines.join("\n"));
+    return { file, milestone: publicMilestone({ ...item, status: done ? "done" : "open" }) };
+  });
+}
+
+export function setMilestoneDue(home, { project, target, due } = {}) {
+  readConfig(home);
+  if (!due) throw new UserError("新しい期限を --due で指定してください。");
+  const dueDate = resolveDateInput(due, "期限");
+  return withLock(home, () => {
+    const file = projectFile(home, project);
+    const parsed = parseMilestones(fs.readFileSync(file, "utf8"));
+    const item = findItem(parsed.items, { target, wanted: "open", label: "マイルストーン", hint: "pm list <プロジェクトID>" });
+    const line = parsed.lines[item.line];
+    parsed.lines[item.line] = DUE_ANY.test(line) ? line.replace(DUE_ANY, `（期限: ${dueDate}）`) : `${line.replace(/\s+$/, "")}（期限: ${dueDate}）`;
+    writeFileAtomic(file, parsed.lines.join("\n"));
+    return { file, milestone: publicMilestone({ ...item, due: dueDate }), from: item.due, to: dueDate };
+  });
+}
+
+export function addProgressLog(home, { project, text } = {}) {
+  readConfig(home);
+  const body = oneLine(text, "進捗の内容", 2000);
+  return withLock(home, () => {
+    const file = projectFile(home, project);
+    const lines = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n").replace(/\n+$/, "").split("\n");
+    const range = ensureSection(lines, PROGRESS_HEADING, 2);
+    const line = `- ${formatDate()}: ${body}`;
+    appendInRange(lines, range, line);
+    writeFileAtomic(file, `${lines.join("\n")}\n`);
+    return { file, added: true, line };
+  });
+}
+
+export function linkRepo(home, { project, repo } = {}) {
+  readConfig(home);
+  const folder = path.resolve(oneLine(repo, "リポジトリのフォルダ（--repo）", 500));
+  if (!fs.existsSync(path.join(folder, ".git"))) throw new UserError(`「${folder}」は git のリポジトリではありません（.git がありません）。`);
+  return withLock(home, () => {
+    projectFile(home, project);
+    const config = readConfig(home);
+    config.repos = { ...(config.repos ?? {}), [project]: folder };
+    saveConfig(home, config);
+    return { project, repo: folder };
+  });
+}
+
+// "…ユーザーへ" (handed to the user) or "…待ち" (waiting); "ユーザーの答え" means it was already answered.
+const WAITING_RE = /(待ち|仰ぐ|ユーザーへ)/;
+
+// Recent commits of linked repositories (read-only `git log`). Subjects that mention the user
+// together with waiting/confirmation words are surfaced as "waiting on you".
+export function devActivity(home, { hours = 36 } = {}) {
+  const config = readConfig(home);
+  const span = Number(hours);
+  if (!Number.isFinite(span) || span <= 0 || span > 24 * 31) throw new UserError("--hours は 1〜744 の数で指定してください。");
+  return Object.entries(config.repos ?? {}).map(([project, repo]) => {
+    const result = spawnSync("git", ["-C", repo, "log", `--since=${span} hours ago`, "--pretty=format:%ad%x09%s", "--date=format:%m/%d %H:%M", "-n", "200"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) {
+      return { project, repo, error: (result.error?.message ?? result.stderr ?? "git log に失敗しました").trim().slice(0, 300), commits: [], waiting: [] };
+    }
+    const commits = result.stdout.split("\n").filter(Boolean).map((line) => {
+      const [at, ...rest] = line.split("\t");
+      return { at, subject: rest.join("\t") };
+    });
+    const waiting = commits.filter((commit) => commit.subject.includes("ユーザー") && WAITING_RE.test(commit.subject));
+    return { project, repo, hours: span, commits, waiting };
+  });
+}
+
+// ---------- research: idea records (idea-check) ----------
+
+function frontmatter(content) {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return {};
+  const data = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const pair = line.match(/^([A-Za-z_][\w-]*):\s*(.*?)\s*(#.*)?$/);
+    if (pair) data[pair[1]] = pair[2].replace(/^"(.*)"$/, "$1");
+  }
+  return data;
+}
+
+export function listIdeas(home) {
+  const dir = path.join(home, "departments", "research", "ideas");
   let names = [];
   try {
     names = fs.readdirSync(dir).filter((name) => name.endsWith(".md"));
   } catch {
     return [];
   }
-  const until = addDays(date, days);
-  const milestones = [];
-  for (const name of names.sort()) {
-    const content = readText(path.join(dir, name)) ?? "";
-    const project = titleOf(content, path.basename(name, ".md"));
-    for (const item of parseTodo(content).items) {
-      if (item.status === "open" && item.due && item.due <= until) {
-        milestones.push({ project, file: `departments/pm/projects/${name}`, text: item.text, due: item.due, overdue: item.due < date });
-      }
-    }
-  }
-  return milestones.sort((a, b) => a.due.localeCompare(b.due));
+  return names
+    .map((name) => {
+      const content = readText(path.join(dir, name)) ?? "";
+      const meta = frontmatter(content);
+      const stage = Number.parseInt(meta.stage, 10);
+      return {
+        id: path.basename(name, ".md"),
+        name: meta.name || titleOf(content, path.basename(name, ".md")),
+        status: meta.status || null,
+        stage: Number.isFinite(stage) ? stage : null,
+        updated: meta.updated || null,
+        path: `departments/research/ideas/${name}`,
+      };
+    })
+    .sort((a, b) => String(b.updated ?? "").localeCompare(String(a.updated ?? "")));
 }
 
 function previousMonth(date) {
@@ -788,6 +1097,20 @@ export function buildBrief(home, { date, save = false } = {}) {
       }
       lines.push("");
     }
+    const dev = config.repos ? devActivity(home, { hours: 36 }) : [];
+    if (dev.length) {
+      lines.push("## 開発の動き（直近36時間）", "");
+      for (const entry of dev) {
+        if (entry.error) {
+          lines.push(`- ${entry.project}: 読み取れませんでした（${entry.error}）`);
+          continue;
+        }
+        const latest = entry.commits[0];
+        lines.push(`- ${entry.project}: コミット ${entry.commits.length}件${latest ? `（最新 ${latest.at}: ${latest.subject}）` : ""}`);
+        for (const commit of entry.waiting.slice(0, 3)) lines.push(`  - **あなたの確認待ちかもしれません**: ${commit.at} ${commit.subject}`);
+      }
+      lines.push("");
+    }
     if (previous) {
       lines.push(`## 前回（${previous.date}）の振り返り`, "", `- 完了 ${previous.done}件 ／ 今日へ繰り越し ${previous.carried}件`, "");
     }
@@ -813,6 +1136,7 @@ export function buildBrief(home, { date, save = false } = {}) {
       previous,
       memos: memos.length,
       milestones,
+      dev,
       markdown,
     };
   });
@@ -1082,6 +1406,7 @@ export function dashboardState(home) {
     todo: { path: `todos/${date}.md`, items },
     milestones: upcomingMilestones(home, { date, days: 14 }),
     analytics: analyticsState(home),
+    ideas: listIdeas(home),
     week,
     memos,
     decisions,

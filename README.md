@@ -11,14 +11,31 @@ Claude Code で `/secretary` と呼ぶと、あなた専用の秘書が窓口に
 | 「今日やること教えて」 | 今日のTODOを優先度順に表示。期限切れ・期限間近を先に知らせる |
 | 「請求書の発行を金曜までにTODOに入れて」 | 優先度と期限を読み取って追加 |
 | 「見積もり終わった」 | 該当のTODOを完了にする |
+| 「〇〇はやめておく」 | 完了にせず見送る（理由をメモ欄に残す）。毎日のルーティンで入る TODO は、新しいものに自動で置き換わってたまらない |
+| 「アプリAの進み具合は？」「審査の期限を金曜にずらして」 | プロジェクトのマイルストーンの一覧・追加・完了・期限の変更・進捗の記録 |
 | 「メモして：競合Xが無料プランを開始」 | 今日のメモに時刻つきで追記 |
 | 「料金は月980円に決めた。理由は…」 | 判断ログに記録 |
 | 「新サービスの名前で壁打ちしたい」 | 質問しながら整理し、結論と次のアクションをノートに保存 |
-| 「おはよう」「朝のまとめ」 | 今日のTODO・期限・前日の振り返り・未整理メモをまとめて保存 |
+| 「おはよう」「朝のまとめ」 | 今日のTODO・期限・プロジェクトの予定・開発の動き・前日の振り返り・未整理メモをまとめて保存 |
 | 「ダッシュボード開いて」 | ブラウザで一覧画面を起動 |
 | 「リサーチ部署を作って」 | 部署フォルダとルールを作成（依頼が続くと秘書から提案もします） |
 
 未完了のTODOは翌日に自動で繰り越されます。
+
+### 毎朝のルーティン（定期実行）
+
+Claude デスクトップアプリのスケジュール機能などに、手順書を読む一文だけを登録します。手順を直すときは手順書を直せば、履歴が残り、どの環境でも同じ動きになります。
+
+| ルーティン | 手順書 | 定期実行のプロンプトの例 |
+|---|---|---|
+| SNS の投稿案（例 7:30） | `departments/sns-daily/references/scheduled-run.md` | 「SNSの投稿案を作る。~/.claude/skills/sns-daily/references/scheduled-run.md を読み、アプリID myapp でそのとおりに実行する。」 |
+| 朝のまとめ（例 8:00） | `secretary/references/routines/morning-brief.md` | 「AI秘書の朝のまとめを作る。~/.claude/skills/secretary/references/routines/morning-brief.md を読み、そのとおりに実行する。」 |
+
+朝のまとめは、今日のおすすめの順番・期限・開発の動き・その日の投稿案をくわしく説明し、要点をスマホに通知します（通知の機能が使える場合）。
+
+### 開発のリポジトリとつなぐ
+
+`node secretary.mjs pm link <プロジェクトID> --repo <フォルダ>` でつなぐと、朝のまとめと `dev` コマンドに直近のコミットが載ります。件名に「ユーザーへ」「…待ち」がある変更は「確認待ちかもしれません」として知らせます（git は読むだけ）。
 
 ## インストール
 
@@ -81,6 +98,9 @@ node secretary/scripts/dashboard.mjs
 node secretary/scripts/secretary.mjs --help
 node secretary/scripts/secretary.mjs todo add "見積もり送付" --priority high --due tomorrow
 node secretary/scripts/secretary.mjs brief --save
+node secretary/scripts/secretary.mjs pm list
+node secretary/scripts/secretary.mjs pm add myapp "審査に出す" --due 2026-10-05 --section "公開まで"
+node secretary/scripts/secretary.mjs pm done myapp 審査
 ```
 
 ## 部署の専用スキル（`departments/`）

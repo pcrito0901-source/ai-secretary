@@ -12,7 +12,7 @@ node "$HOME/.claude/skills/marketing-hq/scripts/growth.mjs" <コマンド>
 node "$HOME/.claude/skills/secretary/scripts/secretary.mjs" <コマンド>
 ```
 
-**定期実行（ユーザーがいない状態）で動いているときは質問しない。** 足りない情報があれば、何が足りないかを報告して終える。
+**定期実行（ユーザーがいない状態）で動いているときは質問しない。** 足りない情報があれば、何が足りないかを報告して終える。定期実行の手順は `references/scheduled-run.md`（プロンプトには、その手順書を読む一文だけを書く）。
 
 ## 手順
 
@@ -49,7 +49,7 @@ node "$HOME/.claude/skills/secretary/scripts/secretary.mjs" <コマンド>
 - **狙い（仮説）**: なぜ伸びると考えるか
 ```
 
-6. `secretary.mjs todo add "SNS投稿: <アプリ名>（案: content/YYYY-MM-DD-sns.md）"` を実行する（同じ内容は自動で重複しない）。
+6. `secretary.mjs todo add "SNS投稿: <アプリ名>（案: content/YYYY-MM-DD-sns.md）" --replace "SNS投稿: <アプリ名>"` を実行する。前の日の投稿の TODO が残っていれば、新しい1件に置き換わる（毎日たまらない）。
 7. ユーザーに、3本の要点（フックと形式）を短く伝え、最後に「投稿したら『1番を投稿した』と教えてください。計測リンクを発行して記録します」と添える。
 
 ## 投稿したと言われたら
